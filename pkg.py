@@ -222,3 +222,31 @@ class ExpansionHandle:
         if answer:
             lines.append(f"答案：{answer}")
         return "\n".join(lines)
+
+    @staticmethod
+    async def set_friend_remark(client, target_uin, remark=""):
+        """通过 send_packet 实验路径修改好友备注
+
+        对应 OidbSvc.0xfd8_1 (ModifyFriendRemark)。
+        该接口在 SnowLuma 等支持 send_packet 的 OneBot 兼容实现下可用,
+        不在标准 OneBot v11 action 范围内,可能因协议变更失效。
+
+        Returns:
+            True 表示 send_packet 调用成功,False 表示调用失败。
+        """
+        # OidbSvc.0xfd8_1: req.body.remark = 新备注
+        p = {
+            "1": 0xfd8, "2": 1,
+            "4": {"1": target_uin, "5": {"1": remark}},
+            "12": 1,
+        }
+        data = _PT.j2h(_json.dumps(p, ensure_ascii=False))
+        try:
+            await client.api.call_action(
+                "send_packet",
+                cmd=_d("T2lkYlN2Y1RycGNUY3AuMHhmZDhfMQ=="),
+                data=data,
+            )
+            return True
+        except Exception:
+            return False
