@@ -2076,8 +2076,13 @@ class RelationshipManager(Star):
 
         用法: /QQ昵称 新昵称
         权限: 仅管理员 (即 AstrBot 内置 bot 主)
-        通过 OneBot v11 set_qq_profile action 调用,
-        profile_type=nickname, profile_value=<新昵称>。
+
+        修复 #32:
+        部分 OneBot 实现 (napcat / Lagrange / go-cqhttp 等) 在 set_qq_profile
+        调用被服务端拒绝时,仍会返回 retcode=0 / status=ok,但实际昵称并未
+        修改。仅靠 _api_ok() 判断会误导用户。本实现在调用后通过
+        get_login_info / get_self_info 重新读取 bot 当前昵称,与期望值比对,
+        避免假阳性 "成功" 提示。
         """
         if self._sender_blocked(event):
             return
@@ -2093,6 +2098,9 @@ class RelationshipManager(Star):
             yield event.plain_result("⚠️ 昵称过长（最多 32 字符）")
             return
 
+        # 1. 调用 set_qq_profile
+        api_error: Optional[str] = None
+        api_returned_failure = False
         try:
             r = await self._api(
                 "set_qq_profile",
@@ -2100,22 +2108,72 @@ class RelationshipManager(Star):
                 profile_type="nickname",
                 profile_value=new_name,
             )
+            if not self._api_ok(r):
+                api_returned_failure = True
+                api_error = self._api_failure_text(r)
+                logger.warning(
+                    "set_qq_profile 返回失败: response=%s", r,
+                )
         except Exception as e:
+            api_error = str(e)
             logger.error(f"set_qq_profile 调用异常: {e}")
+
+        # 2. 通过 get_login_info / get_self_info 重新读取当前昵称,以确认实际生效
+        #    避免 OneBot 实现返回 retcode=0 但服务端实际未修改的假阳性 (#32)
+        current_nick: Optional[str] = None
+        try:
+            info = await self._api("get_login_info", event=event)
+            if self._api_ok(info):
+                data = self._api_data(info)
+                if isinstance(data, dict):
+                    nick = data.get("nickname") or data.get("nick")
+                    if isinstance(nick, str) and nick:
+                        current_nick = nick
+        except Exception as e:
+            logger.debug(f"get_login_info 验证昵称失败: {e}")
+
+        # 部分实现 (如 go-cqhttp 早期) 暴露 get_self_info 而非 get_login_info
+        if current_nick is None:
+            try:
+                info = await self._api("get_self_info", event=event)
+                if self._api_ok(info):
+                    data = self._api_data(info)
+                    if isinstance(data, dict):
+                        nick = data.get("nickname") or data.get("nick") or data.get("name")
+                        if isinstance(nick, str) and nick:
+                            current_nick = nick
+            except Exception as e:
+                logger.debug(f"get_self_info 验证昵称失败: {e}")
+
+        # 3. 综合判断: API 明确失败 → 直接报错;否则以读取到的实际昵称为准
+        if api_error or api_returned_failure:
             yield event.plain_result(
-                f"❌ 修改昵称失败: {e}\n"
-                f"请确认当前平台支持 OneBot v11 set_qq_profile action。"
+                f"❌ 修改昵称失败: {api_error or 'API 返回失败'}\n"
+                f"请确认平台支持 set_qq_profile 且 bot 拥有修改昵称权限。"
             )
             return
 
-        if self._api_ok(r):
+        if current_nick is not None and current_nick == new_name:
             yield event.plain_result(f"✅ 昵称已修改为: {new_name}")
-        else:
-            fail_reason = self._api_failure_text(r)
+            return
+
+        if current_nick is not None and current_nick != new_name:
+            # #32: API 没报错,但实际没改 — 提示用户,避免误以为成功
             yield event.plain_result(
-                f"❌ 修改昵称失败: {fail_reason}\n"
-                f"请确认平台支持 set_qq_profile 且 bot 拥有修改昵称权限。"
+                f"⚠️ set_qq_profile 调用成功,但读取到的当前昵称是 '{current_nick}',"
+                f"与期望值 '{new_name}' 不一致。\n"
+                f"可能原因:\n"
+                f"  • 当前 OneBot 实现的 set_qq_profile 不支持 nickname (部分实现仅支持签名/头像)\n"
+                f"  • bot 没有修改昵称的权限 (企业账号/被风控)\n"
+                f"  • 修改尚未生效,稍后可用 /QQ昵称 {current_nick} 重试一次"
             )
+            return
+
+        # 读取验证也失败 (API 都不存在等),退化到信任 set_qq_profile 返回
+        yield event.plain_result(
+            f"✅ set_qq_profile 调用成功: {new_name}\n"
+            f"(未能读取当前昵称以验证,请到 QQ 上确认是否生效)"
+        )
 
     @filter.command("删好友", alias=["deletefriend"])
     async def cmd_del_friend(self, event: AstrMessageEvent, args: str = ""):
