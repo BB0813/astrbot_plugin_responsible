@@ -2197,7 +2197,7 @@ class RelationshipManager(Star):
                 f"可能原因:\n"
                 f"  • 当前 OneBot 实现的 set_qq_profile 不支持 nickname (部分实现仅支持签名/头像)\n"
                 f"  • bot 没有修改昵称的权限 (企业账号/被风控)\n"
-                f"  • 修改尚未生效,稍后可用 /QQ昵称 {current_nick} 重试一次"
+                f"  • 修改尚未生效,稍后可用 /QQ昵称 {new_name} 重试一次"
             )
             return
 
