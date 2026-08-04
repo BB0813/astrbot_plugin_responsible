@@ -2178,6 +2178,101 @@ class RelationshipManager(Star):
             parts.append(f"❌ 失败: {', '.join(fail)}")
         yield event.plain_result("\n".join(parts) if parts else "❌ 无结果")
 
+    @filter.command("改备注", alias=["remark", "setremark"])
+    async def cmd_set_remark(self, event: AstrMessageEvent, args: str = ""):
+        """修改好友备注
+
+        用法: /改备注 QQ号 备注内容
+        优先使用 OneBot v11 标准 set_friend_remark action;
+        失败或平台不支持时回退到 SnowLuma send_packet 实验路径。
+        """
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        parts = args.strip().split(maxsplit=1)
+        uids = self._ids(args)
+        if not uids or len(parts) < 2:
+            yield event.plain_result("⚠️ /改备注 QQ号 新备注\n例: /改备注 123456789 老王")
+            return
+
+        uid = uids[0]
+        if not self._valid_uid(uid):
+            yield event.plain_result(f"⚠️ QQ号格式无效（需5-12位数字）: {uid}")
+            return
+
+        new_remark = parts[1].strip()
+        if not new_remark:
+            yield event.plain_result("⚠️ 备注内容不能为空")
+            return
+        # 备注长度上限,避免异常 payload
+        if len(new_remark) > 64:
+            yield event.plain_result("⚠️ 备注过长（最多 64 字符）")
+            return
+
+        # 1) 优先: OneBot v11 标准 action
+        try:
+            r = await self._api(
+                "set_friend_remark",
+                event=event,
+                user_id=int(uid),
+                remark=new_remark,
+            )
+            if self._api_ok(r):
+                yield event.plain_result(f"✅ 已修改 {uid} 的备注: {new_remark}")
+                return
+            logger.warning(
+                "set_friend_remark 标准 action 失败: uid=%s, response=%s, fallback to send_packet",
+                uid, r,
+            )
+        except Exception as e:
+            logger.warning(f"set_friend_remark 调用异常,准备回退: {e}")
+
+        # 2) 回退: SnowLuma send_packet 实验路径
+        client = None
+        if hasattr(event, 'bot'):
+            client = event.bot
+        else:
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        break
+
+        if not client:
+            yield event.plain_result(
+                "❌ 无法获取客户端,且标准 set_friend_remark 也未成功。"
+                "请检查平台是否支持 OneBot v11 修改好友备注。"
+            )
+            return
+        if ExpansionHandle is None:
+            yield event.plain_result(
+                "❌ 标准 set_friend_remark 不可用,扩展 Packet 模块也未加载,无法修改备注。"
+            )
+            return
+
+        try:
+            ok = await ExpansionHandle.set_friend_remark(
+                client=client,
+                target_uin=int(uid),
+                remark=new_remark,
+            )
+            if ok:
+                yield event.plain_result(f"✅ 已修改 {uid} 的备注: {new_remark}")
+            else:
+                yield event.plain_result(
+                    f"❌ 修改备注失败。set_friend_remark 与 send_packet 均不可用,"
+                    f"或 {uid} 不是你的好友。"
+                )
+        except Exception as e:
+            logger.error(f"改备注失败: uid={uid}, err={e}")
+            yield event.plain_result(
+                f"⚠️ send_packet 调用失败: {e}\n"
+                f"请手动在 QQ 上修改 {uid} 的备注为: {new_remark}"
+            )
+
     @filter.command("退群", alias=["leavegroup"])
     async def cmd_leave_group(self, event: AstrMessageEvent, args: str = ""):
         if self._sender_blocked(event):
