@@ -1396,6 +1396,25 @@ class RelationshipManager(Star):
         group_blacklist = self.blacklist.get(group_bl_key, {})
         return str(gid) in group_blacklist
 
+    async def _resolve_user_name(self, event: AstrMessageEvent, uid: str) -> str:
+        """获取用户昵称,失败时回退到 uid 字符串。
+
+        用于 issue #25 通知模板中的 ``{user_name}`` 占位。
+        """
+        if not uid:
+            return "未知"
+        try:
+            res = await self._api("get_stranger_info", event=event, user_id=int(uid))
+            if self._api_ok(res):
+                data = self._api_data(res)
+                if isinstance(data, dict):
+                    name = data.get("nickname")
+                    if name:
+                        return str(name)
+        except Exception as e:
+            logger.debug(f"获取用户昵称失败 uid={uid}: {e}")
+        return uid
+
     # ───────── 请求事件自动监听 ─────────
 
     @filter.event_message_type(EventMessageType.ALL)
@@ -1638,11 +1657,24 @@ class RelationshipManager(Star):
                         if group_id:
                             self._add_group_to_blacklist(group_id)
                             logger.info(f"Bot被踢出群 {group_id}，已将该群加入黑名单")
-                            await self._notify(
-                                f"⚠️ Bot被踢出群 {group_id}\n"
-                                f"操作者: {operator_id}\n"
-                                f"该群已加入黑名单，后续邀请将被自动拒绝"
+                            # 获取操作者昵称 (issue #25 模板: user_name / user_qq)
+                            operator_name = await self._resolve_user_name(event, operator_id)
+                            msg = (
+                                f"呜呜呜X﹏X！我在{group_id}被{operator_name}"
+                                f"{operator_id}踢出群了！已将此群拉黑！"
                             )
+                            await self._notify(msg)
+
+                elif notice_type == "group_ban":
+                    # issue #25: Bot 被禁言时通知 bot 主
+                    sub_type = raw.get("sub_type", "")
+                    if sub_type == "ban" and user_id == self_id:
+                        operator_name = await self._resolve_user_name(event, operator_id)
+                        msg = (
+                            f"呜呜呜X﹏X！我在{group_id}被{operator_name}"
+                            f"{operator_id}禁言了！"
+                        )
+                        await self._notify(msg)
 
                 elif notice_type == "group_increase":
                     sub_type = raw.get("sub_type", "")
