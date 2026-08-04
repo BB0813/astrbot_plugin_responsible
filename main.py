@@ -2070,6 +2070,53 @@ class RelationshipManager(Star):
 
     # ───────── 删好友 / 退群 ─────────
 
+    @filter.command("QQ昵称", alias=["qqnickname", "setnickname", "改昵称"])
+    async def cmd_set_qq_nickname(self, event: AstrMessageEvent, args: str = ""):
+        """修改 bot 自身的 QQ 昵称
+
+        用法: /QQ昵称 新昵称
+        权限: 仅管理员 (即 AstrBot 内置 bot 主)
+        通过 OneBot v11 set_qq_profile action 调用,
+        profile_type=nickname, profile_value=<新昵称>。
+        """
+        if self._sender_blocked(event):
+            return
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅 Astrbot 内置 bot 主可用")
+            return
+
+        new_name = args.strip()
+        if not new_name:
+            yield event.plain_result("⚠️ /QQ昵称 新昵称\n例: /QQ昵称 守护姬")
+            return
+        if len(new_name) > 32:
+            yield event.plain_result("⚠️ 昵称过长（最多 32 字符）")
+            return
+
+        try:
+            r = await self._api(
+                "set_qq_profile",
+                event=event,
+                profile_type="nickname",
+                profile_value=new_name,
+            )
+        except Exception as e:
+            logger.error(f"set_qq_profile 调用异常: {e}")
+            yield event.plain_result(
+                f"❌ 修改昵称失败: {e}\n"
+                f"请确认当前平台支持 OneBot v11 set_qq_profile action。"
+            )
+            return
+
+        if self._api_ok(r):
+            yield event.plain_result(f"✅ 昵称已修改为: {new_name}")
+        else:
+            fail_reason = self._api_failure_text(r)
+            yield event.plain_result(
+                f"❌ 修改昵称失败: {fail_reason}\n"
+                f"请确认平台支持 set_qq_profile 且 bot 拥有修改昵称权限。"
+            )
+
     @filter.command("删好友", alias=["deletefriend"])
     async def cmd_del_friend(self, event: AstrMessageEvent, args: str = ""):
         if self._sender_blocked(event):
