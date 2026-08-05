@@ -2,9 +2,10 @@
 import re
 import asyncio
 import uuid
+from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Set
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event.filter import EventMessageType
@@ -67,6 +68,13 @@ class RelationshipManager(Star):
         self._migrate_blacklist()
 
         self.notify_group: Optional[str] = config.get("notify_group", None)
+        try:
+            self.ban_forward_history_count = max(
+                0, min(100, int(config.get("ban_forward_history_count", 20)))
+            )
+        except Exception:
+            self.ban_forward_history_count = 20
+        self._group_message_history: Dict[str, Deque[dict]] = {}
         self._lock = asyncio.Lock()
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
@@ -431,6 +439,184 @@ class RelationshipManager(Star):
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
         return list(dict.fromkeys(ids))
+
+    def _get_client(self, event: AstrMessageEvent = None):
+        """获取当前可用 OneBot 客户端。"""
+        try:
+            if event and hasattr(event, 'bot'):
+                client = event.bot
+                if client:
+                    return client
+        except Exception:
+            pass
+        try:
+            if event:
+                platform_id = event.get_platform_id()
+                platform = self.context.get_platform_inst(platform_id)
+                if platform and hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        return client
+        except Exception:
+            pass
+        try:
+            for platform in self.context.platform_manager.get_insts():
+                if hasattr(platform, 'get_client'):
+                    client = platform.get_client()
+                    if client:
+                        return client
+        except Exception:
+            pass
+        return None
+
+    def _looks_like_group_message(self, payload: dict) -> bool:
+        post_type = str(payload.get("post_type", "")).lower()
+        message_type = str(payload.get("message_type", "")).lower()
+        return (
+            post_type == "message"
+            and message_type == "group"
+            and bool(payload.get("group_id"))
+            and bool(payload.get("user_id"))
+        )
+
+    def _extract_group_message_payload(self, event: AstrMessageEvent) -> Optional[dict]:
+        return self._extract_event_payload(event, self._looks_like_group_message)
+
+    @staticmethod
+    def _message_content_to_text(message: Any, raw_message: str = "") -> str:
+        if isinstance(raw_message, str) and raw_message:
+            return raw_message
+        if isinstance(message, str):
+            return message
+        if isinstance(message, list):
+            parts = []
+            for seg in message:
+                if isinstance(seg, dict):
+                    seg_type = str(seg.get("type", ""))
+                    data = seg.get("data") or {}
+                    if seg_type == "text":
+                        parts.append(str(data.get("text", "")))
+                    elif seg_type:
+                        parts.append(f"[CQ:{seg_type}]")
+                elif seg is not None:
+                    parts.append(str(seg))
+            return "".join(parts).strip()
+        return str(message or "").strip()
+
+    def _cache_group_message(self, event: AstrMessageEvent):
+        """缓存群聊消息,用于 Bot 被禁言时合并转发禁言前记录。"""
+        if self.ban_forward_history_count <= 0:
+            return
+        raw = self._extract_group_message_payload(event)
+        if not isinstance(raw, dict):
+            return
+        gid = str(raw.get("group_id", "")).strip()
+        uid = str(raw.get("user_id", "")).strip()
+        if not gid or not uid:
+            return
+
+        sender = raw.get("sender") if isinstance(raw.get("sender"), dict) else {}
+        name = (
+            sender.get("card")
+            or sender.get("nickname")
+            or raw.get("sender_name")
+            or raw.get("nickname")
+            or uid
+        )
+        content = self._message_content_to_text(raw.get("message"), raw.get("raw_message", ""))
+        if not content:
+            return
+
+        history = self._group_message_history.get(gid)
+        if history is None or history.maxlen != self.ban_forward_history_count:
+            history = deque(history or [], maxlen=self.ban_forward_history_count)
+            self._group_message_history[gid] = history
+        history.append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user_id": uid,
+            "name": str(name),
+            "content": content,
+        })
+
+    def _build_forward_nodes(self, history: List[dict], group_id: str) -> List[dict]:
+        nodes = []
+        for item in history:
+            name = str(item.get("name") or item.get("user_id") or "未知")
+            uid = str(item.get("user_id") or "0")
+            content = str(item.get("content") or "")
+            time_text = str(item.get("time") or "")
+            nodes.append({
+                "type": "node",
+                "data": {
+                    "name": name,
+                    "uin": uid,
+                    "content": f"[{time_text}] {content}" if time_text else content,
+                },
+            })
+        if not nodes:
+            nodes.append({
+                "type": "node",
+                "data": {
+                    "name": "关系管理插件",
+                    "uin": "0",
+                    "content": f"群 {group_id} 暂无可转发的禁言前聊天记录",
+                },
+            })
+        return nodes
+
+    def _history_to_text(self, history: List[dict], group_id: str) -> str:
+        if not history:
+            return f"【群 {group_id} 禁言前聊天记录】\n暂无可转发记录"
+        lines = [f"【群 {group_id} 禁言前最近 {len(history)} 条聊天记录】"]
+        for item in history:
+            lines.append(
+                f"[{item.get('time', '')}] {item.get('name', item.get('user_id', '未知'))}"
+                f"({item.get('user_id', '未知')}): {item.get('content', '')}"
+            )
+        return "\n".join(lines)
+
+    async def _send_ban_history_forward(self, event: AstrMessageEvent, group_id: str):
+        """发送 Bot 被禁言前的聊天记录合并转发。"""
+        count = self.ban_forward_history_count
+        if count <= 0:
+            return
+        history = list(self._group_message_history.get(str(group_id), []))[-count:]
+        nodes = self._build_forward_nodes(history, str(group_id))
+        fallback_text = self._history_to_text(history, str(group_id))
+        client = self._get_client(event)
+
+        sent = False
+        if client:
+            try:
+                if self.notify_group:
+                    res = await self._api(
+                        "send_group_forward_msg",
+                        event=event,
+                        group_id=int(self.notify_group),
+                        messages=nodes,
+                    )
+                    sent = self._api_ok(res)
+                    if not sent:
+                        logger.warning(f"发送群合并转发失败: {res}")
+                else:
+                    for aid in self._get_admins():
+                        res = await self._api(
+                            "send_private_forward_msg",
+                            event=event,
+                            user_id=int(aid),
+                            messages=nodes,
+                        )
+                        if self._api_ok(res):
+                            sent = True
+                        else:
+                            logger.warning(f"发送私聊合并转发失败: aid={aid}, response={res}")
+            except Exception as e:
+                logger.error(f"发送禁言前合并转发异常: {e}")
+
+        if not sent:
+            await self._notify(
+                f"⚠️ 当前平台不支持合并转发或发送失败,已改为文本摘要:\n{fallback_text}"
+            )
 
     @staticmethod
     def _normalize_msg_id(value: Any) -> Optional[str]:
@@ -1420,6 +1606,11 @@ class RelationshipManager(Star):
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_event(self, event: AstrMessageEvent) -> Optional[AstrMessageEvent]:
         try:
+            self._cache_group_message(event)
+        except Exception as e:
+            logger.debug(f"缓存群聊消息失败: {e}")
+
+        try:
             raw = self._extract_event_payload(event, self._looks_like_friend_request)
             if raw:
                 logger.info("捕获好友申请事件: keys=%s", sorted(raw.keys()))
@@ -1675,6 +1866,7 @@ class RelationshipManager(Star):
                             f"{operator_id}禁言了！"
                         )
                         await self._notify(msg)
+                        await self._send_ban_history_forward(event, group_id)
 
                 elif notice_type == "group_increase":
                     sub_type = raw.get("sub_type", "")

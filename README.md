@@ -119,6 +119,7 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 |--------|------|--------|------|
 | `data_path` | string | `data` | 数据存储路径 |
 | `notify_group` | string | `None` | 通知群号（为空则私聊通知） |
+| `ban_forward_history_count` | int | `20` | Bot 被群禁言时，合并转发禁言前最近 N 条群聊记录；设为 `0` 关闭，最大 `100` |
 
 ## 🔧 工作原理
 
@@ -139,6 +140,7 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 3. **被动防护**
    - 监听 Bot 被踢出群事件
    - 自动将该群加入黑名单
+   - 监听 Bot 被禁言事件，通知 Bot 主并合并转发禁言前最近 N 条群聊记录
    - 监听 Bot 被拉入群事件
    - 如果是黑名单群，自动退出并通知
 
