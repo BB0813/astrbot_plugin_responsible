@@ -2,4 +2,4 @@
 
 This file defines the review rules for AstrBot plugins under the `.sakura/rules/` convention.
 
--[issue审核规范](https://github.com/BB0813/astrbot-plugin-dev)
+-[issue审核规范](https://github.com/BB0813/astrbot-plugin-dev/blob/main/docs/astrbot-plugin-development.md)
