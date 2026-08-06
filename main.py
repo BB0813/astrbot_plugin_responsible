@@ -2490,7 +2490,10 @@ class RelationshipManager(Star):
         if api_error or api_returned_failure:
             yield event.plain_result(
                 f"❌ 修改昵称失败: {api_error or 'API 返回失败'}\n"
-                f"请确认平台支持 set_qq_profile 且 bot 拥有修改昵称权限。"
+                f"可能原因:\n"
+                f"  • 当前 OneBot 协议端的 set_qq_profile action 未实现或不支持修改昵称\n"
+                f"  • bot 没有修改昵称权限 (企业账号/被风控)\n"
+                f"建议: 在协议端控制台手动修改昵称,或使用 astrbot_plugin_qqprofile 插件"
             )
             return
 
@@ -2499,20 +2502,23 @@ class RelationshipManager(Star):
             return
 
         if current_nick is not None and current_nick != new_name:
-            # #32: API 没报错,但实际没改 — 提示用户,避免误以为成功
+            # #32: API 没报错,但实际没改 — 协议端静默拒绝。
+            # 不要再说"调用成功"或"稍后重试",而是给出可执行的下一步。
             yield event.plain_result(
-                f"⚠️ set_qq_profile 调用成功,但读取到的当前昵称是 '{current_nick}',"
-                f"与期望值 '{new_name}' 不一致。\n"
-                f"可能原因:\n"
+                f"❌ 修改昵称失败: set_qq_profile 返回 retcode=0,但读取到的当前昵称是 "
+                f"'{current_nick}',与期望值 '{new_name}' 不一致。\n"
+                f"这是协议端静默拒绝的常见表现。可能的真正原因:\n"
                 f"  • 当前 OneBot 实现的 set_qq_profile 不支持 nickname (部分实现仅支持签名/头像)\n"
-                f"  • bot 没有修改昵称的权限 (企业账号/被风控)\n"
-                f"  • 修改尚未生效,稍后可用 /QQ昵称 {new_name} 重试一次"
+                f"  • bot 没有修改昵称的权限 (企业账号/被风控/封禁)\n"
+                f"  • 协议端未启用修改资料能力\n"
+                f"建议: 在协议端控制台直接修改昵称,或换用 NapCat / Lagrange 的等价 action;"
+                f"不要重试相同命令,通常无效。"
             )
             return
 
         # 读取验证也失败 (API 都不存在等),退化到信任 set_qq_profile 返回
         yield event.plain_result(
-            f"✅ set_qq_profile 调用成功: {new_name}\n"
+            f"⚠️ set_qq_profile 调用已发送: {new_name}\n"
             f"(未能读取当前昵称以验证,请到 QQ 上确认是否生效)"
         )
 
