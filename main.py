@@ -68,6 +68,18 @@ class RelationshipManager(Star):
         self._migrate_blacklist()
 
         self.notify_group: Optional[str] = config.get("notify_group", None)
+        self._notify_qqs: List[str] = []
+        raw_notify_qqs = config.get("notify_qq", [])
+        if isinstance(raw_notify_qqs, str):
+            raw_notify_qqs = [raw_notify_qqs]
+        if isinstance(raw_notify_qqs, list):
+            for item in raw_notify_qqs:
+                if item is None:
+                    continue
+                text = str(item).strip()
+                if not text:
+                    continue
+                self._notify_qqs.append(text)
         raw_history_count = config.get("ban_forward_history_count", 20)
         try:
             if raw_history_count is None or str(raw_history_count).strip() == "":
@@ -402,17 +414,38 @@ class RelationshipManager(Star):
             except Exception:
                 pass
 
+            # 收集本次需要私聊发送的目标 QQ 号 (issue #46)
+            # 优先级: 配置 notify_qq > admins_id
+            private_targets: List[str] = []
+            for q in self._notify_qqs:
+                if q and q not in private_targets:
+                    private_targets.append(q)
+            for aid in self._get_admins():
+                if aid and aid not in private_targets:
+                    private_targets.append(aid)
+
             if client:
                 # 使用客户端直接发送
                 if self.notify_group:
                     res = await client.send_group_msg(group_id=int(self.notify_group), message=msg)
                     if res and isinstance(res, dict):
                         ids.extend(self._collect_message_ids(res))
+                    # 群通知场景下,配置的 notify_qq 仍可同时收到私聊副本
+                    for q in self._notify_qqs:
+                        try:
+                            res = await client.send_private_msg(user_id=int(q), message=msg)
+                            if res and isinstance(res, dict):
+                                ids.extend(self._collect_message_ids(res))
+                        except Exception as e:
+                            logger.warning(f"向 notify_qq {q} 发送私聊副本失败: {e}")
                 else:
-                    for aid in self._get_admins():
-                        res = await client.send_private_msg(user_id=int(aid), message=msg)
-                        if res and isinstance(res, dict):
-                            ids.extend(self._collect_message_ids(res))
+                    for q in private_targets:
+                        try:
+                            res = await client.send_private_msg(user_id=int(q), message=msg)
+                            if res and isinstance(res, dict):
+                                ids.extend(self._collect_message_ids(res))
+                        except Exception as e:
+                            logger.warning(f"向 {q} 发送私聊通知失败: {e}")
             else:
                 # 回退到 send_message
                 from astrbot.api.message_components import Plain
@@ -433,10 +466,19 @@ class RelationshipManager(Star):
                 if self.notify_group:
                     session = f"{platform_name}:GroupMessage:{self.notify_group}"
                     await self.context.send_message(session, message_chain)
+                    for q in self._notify_qqs:
+                        session_q = f"{platform_name}:FriendMessage:{q}"
+                        try:
+                            await self.context.send_message(session_q, message_chain)
+                        except Exception as e:
+                            logger.warning(f"向 notify_qq {q} 发送私聊副本失败: {e}")
                 else:
-                    for aid in self._get_admins():
-                        session = f"{platform_name}:FriendMessage:{aid}"
-                        await self.context.send_message(session, message_chain)
+                    for q in private_targets:
+                        session_q = f"{platform_name}:FriendMessage:{q}"
+                        try:
+                            await self.context.send_message(session_q, message_chain)
+                        except Exception as e:
+                            logger.warning(f"向 {q} 发送私聊通知失败: {e}")
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
         return list(dict.fromkeys(ids))
