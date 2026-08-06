@@ -131,6 +131,7 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 |--------|------|--------|------|
 | `data_path` | string | `data` | 数据存储路径 |
 | `notify_group` | string | `None` | 通知群号（为空则私聊通知） |
+| `notify_qq` | list[string] | `[]` | 额外接收通知的 QQ 号列表 |
 | `ban_forward_history_count` | int | `20` | Bot 被群禁言时，合并转发禁言前最近 N 条群聊记录；设为 `0` 关闭，最大 `100` |
 
 ## 🔧 工作原理

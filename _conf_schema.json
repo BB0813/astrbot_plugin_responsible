@@ -11,6 +11,13 @@
     "hint": "设置后所有通知发送到该群；留空则私聊通知 AstrBot 管理员 / bot 主。",
     "default": ""
   },
+  "notify_qq": {
+    "description": "额外接收通知的 QQ 号列表",
+    "type": "list",
+    "items": {"type": "string"},
+    "hint": "填写的 QQ 号会收到所有插件通知（私聊）。多个用逗号或列表项分隔。如果同时设置了 notify_group，notify_qq 会额外收到一条私聊副本。",
+    "default": []
+  },
   "ban_forward_history_count": {
     "description": "被禁言前转发聊天记录数量",
     "type": "int",
