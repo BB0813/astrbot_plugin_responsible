@@ -77,6 +77,7 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 | `/加好友` | `/addfriend` | 添加好友；SnowLuma 下走实验性 `send_packet` | 管理员 |
 | `/加群` | `/addgroup` | 加入群组；SnowLuma 下走实验性 `send_packet` | 管理员 |
 | `/删好友` | `/deletefriend` | 删除好友 | 管理员 |
+| `/改备注` | `/remark`, `/setremark` | 修改好友备注 | 管理员 |
 | `/退群` | `/leavegroup` | 退出群组 | 管理员 |
 | `/QQ昵称` | `/qqnickname`, `/setnickname`, `/改昵称` | 修改 Bot 的 QQ 昵称 | 管理员 |
 | `/设置头像` | `/QQ头像`, `/改头像`, `/setavatar` | 引用/发送图片修改 Bot 的 QQ 头像 | 管理员 |
@@ -102,6 +103,12 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 ```
 /设置头像 设置
 ```
+
+#### 修改好友备注
+```
+/改备注 123456789 老王
+```
+优先调用 OneBot v11 标准 `set_friend_remark`；当标准 action 不可用时回退到 SnowLuma 的 `send_packet` 实验路径。
 
 #### 处理好友申请
 1. 收到好友申请通知后
