@@ -35,7 +35,7 @@ except ImportError:
     "astrbot_plugin_relationship_manager",
     "mjy1113451",
     "AstrBot 关系管理插件",
-    "5.2.4",
+    "5.2.7",
     "https://github.com/mjy1113451/bot_responsible",
 )
 class RelationshipManager(Star):
@@ -88,11 +88,12 @@ class RelationshipManager(Star):
         except Exception:
             self.ban_forward_history_count = 20
         self._group_message_history: Dict[str, Deque[dict]] = {}
+        self._private_message_history: Dict[str, Deque[dict]] = {}
         self._lock = asyncio.Lock()
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
-            "关系管理插件初始化完成 v5.2.4-group-invite-filter: data_dir=%s, pending_file=%s, pending_count=%s",
+            "关系管理插件初始化完成 v5.2.7-spot-check: data_dir=%s, pending_file=%s, pending_count=%s",
             self.data_dir,
             self.pd_file,
             len(self.pending),
@@ -703,6 +704,44 @@ class RelationshipManager(Star):
             "content": content,
         })
 
+    def _cache_private_message(self, event: AstrMessageEvent):
+        """缓存私聊消息,用于 /抽查 命令获取最近私聊记录。"""
+        MAX_PRIVATE_HISTORY = 100
+        raw = self._extract_event_payload(
+            event,
+            lambda p: (
+                str(p.get("post_type", "")).lower() == "message"
+                and str(p.get("message_type", "")).lower() == "private"
+                and bool(p.get("user_id"))
+            ),
+        )
+        if not isinstance(raw, dict):
+            return
+        uid = str(raw.get("user_id", "")).strip()
+        if not uid:
+            return
+        sender = raw.get("sender") if isinstance(raw.get("sender"), dict) else {}
+        name = (
+            sender.get("nickname")
+            or raw.get("sender_name")
+            or raw.get("nickname")
+            or uid
+        )
+        content = self._message_content_to_text(raw.get("message"), raw.get("raw_message", ""))
+        if not content:
+            return
+
+        history = self._private_message_history.get(uid)
+        if history is None or history.maxlen != MAX_PRIVATE_HISTORY:
+            history = deque(history or [], maxlen=MAX_PRIVATE_HISTORY)
+            self._private_message_history[uid] = history
+        history.append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user_id": uid,
+            "name": str(name),
+            "content": content,
+        })
+
     def _build_forward_nodes(self, history: List[dict], group_id: str) -> List[dict]:
         nodes = []
         for item in history:
@@ -782,6 +821,43 @@ class RelationshipManager(Star):
             await self._notify(
                 f"⚠️ 当前平台不支持合并转发或发送失败,已改为文本摘要:\n{fallback_text}"
             )
+
+    async def _get_target_history(self, target_id: str, count: int) -> Optional[List[dict]]:
+        """
+        获取指定目标 (用户私聊或群聊) 的最近聊天记录。
+        自动检测 target_id 是群号还是用户 QQ 号。
+        返回 (history_list, is_group) 或 (None, None) 表示未找到。
+        """
+        # 优先用缓存判断: 在群缓存里找到 → 是群
+        if self.ban_forward_history_count > 0 and target_id in self._group_message_history:
+            return list(self._group_message_history[target_id])[-count:], True
+        # 在私聊缓存里找到 → 是用户
+        if target_id in self._private_message_history:
+            return list(self._private_message_history[target_id])[-count:], False
+        # 缓存里都没有,尝试调 API 确认是否是群号
+        try:
+            for platform in self.context.platform_manager.get_insts():
+                if not hasattr(platform, 'get_client'):
+                    continue
+                client = platform.get_client()
+                if not client:
+                    continue
+                try:
+                    if hasattr(client, 'get_group_info'):
+                        res = await client.get_group_info(group_id=int(target_id))
+                    elif hasattr(client.api, 'call_action'):
+                        res = await client.api.call_action('get_group_info', group_id=int(target_id))
+                    else:
+                        continue
+                    if self._api_ok(res):
+                        return [], True
+                except Exception:
+                    pass
+                break
+        except Exception:
+            pass
+        # 默认当用户处理
+        return [], False
 
     @staticmethod
     def _normalize_msg_id(value: Any) -> Optional[str]:
@@ -1774,6 +1850,11 @@ class RelationshipManager(Star):
             self._cache_group_message(event)
         except Exception as e:
             logger.debug(f"缓存群聊消息失败: {e}")
+
+        try:
+            self._cache_private_message(event)
+        except Exception as e:
+            logger.debug(f"缓存私聊消息失败: {e}")
 
         try:
             raw = self._extract_event_payload(event, self._looks_like_friend_request)
@@ -3104,6 +3185,132 @@ class RelationshipManager(Star):
         config["notify_group"] = gid
         self.context.set_config(config)
         yield event.plain_result(f"✅ 通知群已设置为: {gid}\n后续好友申请和群邀请通知将发送到该群")
+
+    # ───────── 抽查命令 ─────────
+
+    @filter.command("抽查", alias=["spotcheck"])
+    async def cmd_spot_check(self, event: AstrMessageEvent, args: str = ""):
+        """
+        抽查命令: 向 bot 主转发指定用户或群的最近 N 条聊天记录。
+
+        用法:
+          /抽查 {QQ号} {数量}   — 获取 bot 与该用户的私聊记录
+          /抽查 {群号} {数量}   — 获取该群的最近聊天记录
+
+        数量上限 100。若未缓存到该目标的历史记录，将返回空。
+        转发以合并转发消息发送；若平台不支持，回退为纯文本。
+        """
+        if not self._is_admin(event):
+            yield event.plain_result("❌ 仅管理员可用")
+            return
+
+        parts = args.strip().split()
+        if len(parts) < 2:
+            yield event.plain_result(
+                "⚠️ /抽查 {QQ号/群号} {数量}\n"
+                "例: /抽查 123456789 20\n"
+                "   /抽查 987654321 50"
+            )
+            return
+
+        target_id = parts[0].strip()
+        if not re.fullmatch(r"\d{5,12}", target_id):
+            yield event.plain_result("⚠️ QQ号/群号格式无效（需5-12位数字）")
+            return
+
+        try:
+            count = max(1, min(100, int(parts[1])))
+        except ValueError:
+            yield event.plain_result("⚠️ 数量须为正整数，最大 100")
+            return
+
+        # 获取聊天记录并自动检测类型
+        result = await self._get_target_history(target_id, count)
+        if result is None:
+            yield event.plain_result(
+                f"⚠️ 未找到 {target_id} 的聊天记录缓存\n"
+                f"（Bot 启动后收到的聊天才会被缓存，且缓存上限为内存保存，重启后清空）"
+            )
+            return
+        history, is_group = result
+
+        if not history:
+            target_type = "群" if is_group else "用户"
+            yield event.plain_result(f"📋 {target_type} {target_id} 暂无缓存记录")
+            return
+
+        # 构建合并转发节点
+        target_type = "群" if is_group else "用户"
+        nodes = []
+        for item in history:
+            name = str(item.get("name") or item.get("user_id") or "未知")
+            uid = str(item.get("user_id") or "0")
+            content = str(item.get("content") or "")
+            time_text = str(item.get("time") or "")
+            nodes.append({
+                "type": "node",
+                "data": {
+                    "name": name,
+                    "uin": uid,
+                    "content": f"[{time_text}] {content}" if time_text else content,
+                },
+            })
+
+        # 纯文本回退内容
+        fallback_lines = [f"【{target_type} {target_id} 最近 {len(history)} 条聊天记录】"]
+        for item in history:
+            fallback_lines.append(
+                f"[{item.get('time', '')}] {item.get('name', item.get('user_id', '未知'))}"
+                f"({item.get('user_id', '未知')}): {item.get('content', '')}"
+            )
+        fallback_text = "\n".join(fallback_lines)
+
+        # 尝试发送合并转发
+        sent = False
+        client = self._get_client(event)
+        if client:
+            try:
+                if self.notify_group:
+                    if is_group:
+                        res = await self._api(
+                            "send_group_forward_msg",
+                            event=event,
+                            group_id=int(self.notify_group),
+                            messages=nodes,
+                        )
+                    else:
+                        res = await self._api(
+                            "send_private_forward_msg",
+                            event=event,
+                            user_id=int(self.notify_group),
+                            messages=nodes,
+                        )
+                    sent = self._api_ok(res)
+                else:
+                    for aid in self._get_admins():
+                        res = await self._api(
+                            "send_private_forward_msg",
+                            event=event,
+                            user_id=int(aid),
+                            messages=nodes,
+                        )
+                        if self._api_ok(res):
+                            sent = True
+                            break
+            except Exception as e:
+                logger.error(f"抽查转发异常: {e}")
+
+        if sent:
+            yield event.plain_result(
+                f"✅ 已将 {target_type} {target_id} 最近 {len(history)} 条记录转发"
+            )
+        else:
+            await self._notify(
+                f"⚠️ 平台不支持合并转发或发送失败，已改为文本摘要：\n{fallback_text}"
+            )
+            yield event.plain_result(
+                f"⚠️ 合并转发失败，已用文本摘要发送到通知渠道"
+            )
 
     # ───────── 生命周期 ─────────
 

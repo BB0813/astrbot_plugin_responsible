@@ -85,6 +85,7 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 | `/拒绝` | `/reject` | 拒绝请求；支持引用通知或 `/拒绝 编号` | 管理员 |
 | `/拉黑请求` | `/blockreply` | 拒绝并拉黑请求；支持引用通知或 `/拉黑请求 编号` | 管理员 |
 | `/通知群` | `/setnotify`, `/setgroup` | 设置通知群 | 管理员 |
+| `/抽查` | `/spotcheck` | 转发指定用户或群的最近 N 条聊天记录给 Bot 主 | 管理员 |
 
 ### 使用示例
 
@@ -109,6 +110,14 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 /改备注 123456789 老王
 ```
 优先调用 OneBot v11 标准 `set_friend_remark`；当标准 action 不可用时回退到 SnowLuma 的 `send_packet` 实验路径。
+
+#### 抽查聊天记录
+```
+/抽查 123456789 20    # 获取 bot 与用户 123456789 的最近 20 条私聊记录
+/抽查 987654321 50    # 获取群 987654321 的最近 50 条聊天记录
+```
+转发为合并消息发送到通知群/管理员私聊；若平台不支持合并转发则回退为纯文本。
+记录来自内存缓存，Bot 重启后清空，上限每目标 100 条。
 
 #### 处理好友申请
 1. 收到好友申请通知后
