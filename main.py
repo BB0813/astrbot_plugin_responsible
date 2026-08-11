@@ -5,7 +5,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Deque, Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event.filter import EventMessageType
@@ -822,11 +822,11 @@ class RelationshipManager(Star):
                 f"⚠️ 当前平台不支持合并转发或发送失败,已改为文本摘要:\n{fallback_text}"
             )
 
-    async def _get_target_history(self, target_id: str, count: int) -> Optional[List[dict]]:
+    async def _get_target_history(self, target_id: str, count: int) -> Optional[Tuple[List[dict], bool]]:
         """
         获取指定目标 (用户私聊或群聊) 的最近聊天记录。
         自动检测 target_id 是群号还是用户 QQ 号。
-        返回 (history_list, is_group) 或 (None, None) 表示未找到。
+        返回 (history_list, is_group) 或 None 表示未找到。
         """
         # 优先用缓存判断: 在群缓存里找到 → 是群
         if self.ban_forward_history_count > 0 and target_id in self._group_message_history:
