@@ -35,7 +35,7 @@ except ImportError:
     "astrbot_plugin_relationship_manager",
     "mjy1113451",
     "AstrBot 关系管理插件",
-    "5.2.9",
+    "5.2.10",
     "https://github.com/mjy1113451/bot_responsible",
 )
 class RelationshipManager(Star):
@@ -95,7 +95,11 @@ class RelationshipManager(Star):
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
+<<<<<<< HEAD
             "关系管理插件初始化完成 v5.2.9-self-cache: data_dir=%s, pending_file=%s, pending_count=%s",
+=======
+            "关系管理插件初始化完成 v5.2.8-no-timestamp: data_dir=%s, pending_file=%s, pending_count=%s",
+>>>>>>> 67f66bf (fix(#55): 移除合并转发聊天记录中的消息发送时间前缀)
             self.data_dir,
             self.pd_file,
             len(self.pending),
@@ -844,19 +848,25 @@ class RelationshipManager(Star):
             "content": content,
         })
 
-    def _build_forward_nodes(self, history: List[dict], group_id: str) -> List[dict]:
+    def _build_forward_nodes(
+        self,
+        history: List[dict],
+        group_id: str,
+        empty_hint: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        构建合并转发节点。
+        节点内容只保留发言正文，不附带消息发送时间。
+        empty_hint: 无记录时的占位文案，默认按"禁言前记录"措辞。
+        """
         nodes = []
         for item in history:
-            name = str(item.get("name") or item.get("user_id") or "未知")
-            uid = str(item.get("user_id") or "0")
-            content = str(item.get("content") or "")
-            time_text = str(item.get("time") or "")
             nodes.append({
                 "type": "node",
                 "data": {
-                    "name": name,
-                    "uin": uid,
-                    "content": f"[{time_text}] {content}" if time_text else content,
+                    "name": str(item.get("name") or item.get("user_id") or "未知"),
+                    "uin": str(item.get("user_id") or "0"),
+                    "content": str(item.get("content") or ""),
                 },
             })
         if not nodes:
@@ -865,18 +875,28 @@ class RelationshipManager(Star):
                 "data": {
                     "name": "关系管理插件",
                     "uin": "0",
-                    "content": f"群 {group_id} 暂无可转发的禁言前聊天记录",
+                    "content": empty_hint or f"群 {group_id} 暂无可转发的禁言前聊天记录",
                 },
             })
         return nodes
 
-    def _history_to_text(self, history: List[dict], group_id: str) -> str:
+    def _history_to_text(
+        self,
+        history: List[dict],
+        group_id: str,
+        scope: Optional[str] = None,
+    ) -> str:
+        """
+        把聊天记录转成纯文本回退内容，同样不输出消息发送时间。
+        scope: 标题里的范围描述，需自带与后续文字的连接（如 "群 123 禁言前"、"用户 123 "）。
+        """
+        scope = scope or f"群 {group_id} 禁言前"
         if not history:
-            return f"【群 {group_id} 禁言前聊天记录】\n暂无可转发记录"
-        lines = [f"【群 {group_id} 禁言前最近 {len(history)} 条聊天记录】"]
+            return f"【{scope}聊天记录】\n暂无可转发记录"
+        lines = [f"【{scope}最近 {len(history)} 条聊天记录】"]
         for item in history:
             lines.append(
-                f"[{item.get('time', '')}] {item.get('name', item.get('user_id', '未知'))}"
+                f"{item.get('name', item.get('user_id', '未知'))}"
                 f"({item.get('user_id', '未知')}): {item.get('content', '')}"
             )
         return "\n".join(lines)
@@ -3341,31 +3361,15 @@ class RelationshipManager(Star):
             yield event.plain_result(f"📋 {target_type} {target_id} 暂无缓存记录")
             return
 
-        # 构建合并转发节点
+        # 构建合并转发节点 & 纯文本回退
         target_type = "群" if is_group else "用户"
-        nodes = []
-        for item in history:
-            name = str(item.get("name") or item.get("user_id") or "未知")
-            uid = str(item.get("user_id") or "0")
-            content = str(item.get("content") or "")
-            time_text = str(item.get("time") or "")
-            nodes.append({
-                "type": "node",
-                "data": {
-                    "name": name,
-                    "uin": uid,
-                    "content": f"[{time_text}] {content}" if time_text else content,
-                },
-            })
-
-        # 纯文本回退内容
-        fallback_lines = [f"【{target_type} {target_id} 最近 {len(history)} 条聊天记录】"]
-        for item in history:
-            fallback_lines.append(
-                f"[{item.get('time', '')}] {item.get('name', item.get('user_id', '未知'))}"
-                f"({item.get('user_id', '未知')}): {item.get('content', '')}"
-            )
-        fallback_text = "\n".join(fallback_lines)
+        scope = f"{target_type} {target_id} "
+        nodes = self._build_forward_nodes(
+            history,
+            target_id,
+            empty_hint=f"{target_type} {target_id} 暂无可转发的聊天记录",
+        )
+        fallback_text = self._history_to_text(history, target_id, scope=scope)
 
         # 尝试发送合并转发
         sent = False
