@@ -728,7 +728,6 @@ class RelationshipManager(Star):
             history = deque(history or [], maxlen=self.ban_forward_history_count)
             self._group_message_history[gid] = history
         history.append({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "user_id": uid,
             "name": str(name),
             "content": content,
@@ -842,7 +841,6 @@ class RelationshipManager(Star):
             history = deque(history or [], maxlen=MAX_PRIVATE_HISTORY)
             self._private_message_history[uid] = history
         history.append({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "user_id": uid,
             "name": str(name),
             "content": content,
@@ -888,12 +886,13 @@ class RelationshipManager(Star):
     ) -> str:
         """
         把聊天记录转成纯文本回退内容，同样不输出消息发送时间。
-        scope: 标题里的范围描述，需自带与后续文字的连接（如 "群 123 禁言前"、"用户 123 "）。
+        scope: 标题里的范围描述，如 "群 123 禁言前"、"用户 123"。
+        末尾多余空格统一由本方法清洗，避免标题出现连续空格或断词。
         """
-        scope = scope or f"群 {group_id} 禁言前"
+        scope = (scope or f"群 {group_id} 禁言前").strip()
         if not history:
-            return f"【{scope}聊天记录】\n暂无可转发记录"
-        lines = [f"【{scope}最近 {len(history)} 条聊天记录】"]
+            return f"【{scope} 聊天记录】\n暂无可转发记录"
+        lines = [f"【{scope} 最近 {len(history)} 条聊天记录】"]
         for item in history:
             lines.append(
                 f"{item.get('name', item.get('user_id', '未知'))}"
@@ -3363,7 +3362,7 @@ class RelationshipManager(Star):
 
         # 构建合并转发节点 & 纯文本回退
         target_type = "群" if is_group else "用户"
-        scope = f"{target_type} {target_id} "
+        scope = f"{target_type} {target_id}"
         nodes = self._build_forward_nodes(
             history,
             target_id,
