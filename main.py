@@ -448,6 +448,9 @@ class RelationshipManager(Star):
                 if self.notify_group:
                     # issue #56: 缓存 bot 发到 notify_group 的群消息，
                     # 这样若 bot 被该群禁言，仍能看到最近自身发言。
+                    # 先尝试 resolve self_id/self_nickname（event=None 时走 API 兜底）
+                    await self._resolve_self_id(None)
+                    await self._resolve_self_nickname(None)
                     self._cache_self_group_message(
                         self.notify_group, msg,
                     )
@@ -737,6 +740,20 @@ class RelationshipManager(Star):
             if sid:
                 self._self_id = str(sid)
                 return self._self_id
+        # event 为 None（如 notify_group 路径）或 event 拿不到时，走 API 兜底
+        if self._self_id:
+            return self._self_id
+        try:
+            info = await self._api("get_login_info", event=event)
+            if self._api_ok(info):
+                data = self._api_data(info)
+                if isinstance(data, dict):
+                    uid = data.get("user_id") or data.get("qq") or data.get("uin")
+                    if uid is not None:
+                        self._self_id = str(uid)
+                        return self._self_id
+        except Exception as e:
+            logger.debug(f"get_login_info 解析 bot QQ 号失败: {e}")
         return self._self_id
 
     async def _resolve_self_nickname(self, event: Optional[AstrMessageEvent]) -> str:
