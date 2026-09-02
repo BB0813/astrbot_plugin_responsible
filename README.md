@@ -183,6 +183,12 @@ git clone https://github.com/mjy1113451/bot_responsible.git astrbot_plugin_relat
 
 - `/加好友`、`/加群` 不是 OneBot v11 标准 action。SnowLuma 提供 `send_packet`，但这里的主动添加逻辑仍属于原始包实验路径，可能因 QQ/SnowLuma 版本变化失效。
 
+## 📋 版本历史
+
+- **v5.2.8**：合并转发聊天记录（Bot 被禁言自动转发、`/抽查` 转发）不再在每条消息前附带 `[消息发送时间]`。消息顺序仍按转发节点排列，如需要按时间精确回溯请结合禁言通知/群记录整体查看。
+- **v5.2.7**：新增 `/抽查` 命令，转发指定用户私聊或群的最近聊天记录。
+- **v5.2.4**：新增 `/改备注` 命令，修改好友备注。
+
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
