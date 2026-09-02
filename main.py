@@ -772,6 +772,10 @@ class RelationshipManager(Star):
         gid = str(group_id or "").strip()
         if not gid:
             return
+        # 拿不到 bot 自身 QQ 号时跳过缓存，避免用 "bot" 等字面量污染 user_id 空间
+        uid = str(self_id or "").strip() or (self._self_id or "")
+        if not uid:
+            return
         content = self._message_content_to_text(message, "")
         if not content:
             return
@@ -780,9 +784,8 @@ class RelationshipManager(Star):
             history = deque(history or [], maxlen=self.ban_forward_history_count)
             self._group_message_history[gid] = history
         history.append({
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "user_id": self_id or self._self_id or "bot",
-            "name": self_nickname or self._self_nickname or "bot",
+            "user_id": uid,
+            "name": str(self_nickname or self._self_nickname or "bot"),
             "content": content,
         })
 
