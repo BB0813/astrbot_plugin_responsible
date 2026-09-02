@@ -35,7 +35,7 @@ except ImportError:
     "astrbot_plugin_relationship_manager",
     "mjy1113451",
     "AstrBot 关系管理插件",
-    "5.2.7",
+    "5.2.9",
     "https://github.com/mjy1113451/bot_responsible",
 )
 class RelationshipManager(Star):
@@ -89,11 +89,13 @@ class RelationshipManager(Star):
             self.ban_forward_history_count = 20
         self._group_message_history: Dict[str, Deque[dict]] = {}
         self._private_message_history: Dict[str, Deque[dict]] = {}
+        self._self_id: Optional[str] = None
+        self._self_nickname: Optional[str] = None
         self._lock = asyncio.Lock()
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
-            "关系管理插件初始化完成 v5.2.7-spot-check: data_dir=%s, pending_file=%s, pending_count=%s",
+            "关系管理插件初始化完成 v5.2.9-self-cache: data_dir=%s, pending_file=%s, pending_count=%s",
             self.data_dir,
             self.pd_file,
             len(self.pending),
@@ -287,6 +289,22 @@ class RelationshipManager(Star):
 
     async def _api(self, name: str, event: AstrMessageEvent = None, **kw) -> Any:
         """调用 OneBot API"""
+        # issue #56: bot 自己发群消息时，缓存到禁言转发上下文，
+        # 这样禁言后合并转发能看到 bot 自己的发言，便于 bot 主复盘禁言原因。
+        if name == "send_group_msg":
+            try:
+                gid = kw.get("group_id")
+                if gid is not None:
+                    self_id = await self._resolve_self_id(event)
+                    self_nick = await self._resolve_self_nickname(event)
+                    self._cache_self_group_message(
+                        gid,
+                        kw.get("message"),
+                        self_id=self_id,
+                        self_nickname=self_nick,
+                    )
+            except Exception as e:
+                logger.debug(f"缓存 bot 自身群消息失败: {e}")
         try:
             # 方式1: 通过 event.bot 直接获取客户端（推荐）
             if event and hasattr(event, 'bot'):
@@ -428,6 +446,11 @@ class RelationshipManager(Star):
             if client:
                 # 使用客户端直接发送
                 if self.notify_group:
+                    # issue #56: 缓存 bot 发到 notify_group 的群消息，
+                    # 这样若 bot 被该群禁言，仍能看到最近自身发言。
+                    self._cache_self_group_message(
+                        self.notify_group, msg,
+                    )
                     res = await client.send_group_msg(group_id=int(self.notify_group), message=msg)
                     if res and isinstance(res, dict):
                         ids.extend(self._collect_message_ids(res))
@@ -701,6 +724,65 @@ class RelationshipManager(Star):
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "user_id": uid,
             "name": str(name),
+            "content": content,
+        })
+
+    async def _resolve_self_id(self, event: Optional[AstrMessageEvent]) -> Optional[str]:
+        """从 event 或 get_login_info 解析 bot 自身的 QQ 号。"""
+        if event is not None:
+            try:
+                sid = event.get_self_id()
+            except Exception:
+                sid = None
+            if sid:
+                self._self_id = str(sid)
+                return self._self_id
+        return self._self_id
+
+    async def _resolve_self_nickname(self, event: Optional[AstrMessageEvent]) -> str:
+        """优先用已缓存昵称，否则尝试通过 get_login_info 读取；回退为 'bot'。"""
+        if self._self_nickname:
+            return self._self_nickname
+        try:
+            info = await self._api("get_login_info", event=event)
+            if self._api_ok(info):
+                data = self._api_data(info)
+                if isinstance(data, dict):
+                    nick = data.get("nickname") or data.get("nick") or data.get("name")
+                    if isinstance(nick, str) and nick:
+                        self._self_nickname = nick
+                        return nick
+        except Exception as e:
+            logger.debug(f"获取 bot 昵称失败: {e}")
+        return "bot"
+
+    def _cache_self_group_message(
+        self,
+        group_id: Any,
+        message: Any,
+        self_id: Optional[str] = None,
+        self_nickname: Optional[str] = None,
+    ):
+        """缓存 bot 自己发出的群消息，用于禁言时合并转发中包含 bot 自身发言 (#56)。
+
+        不会向 _group_message_history 写入其它用户的发言，也不需要走 _extract_group_message_payload。
+        """
+        if self.ban_forward_history_count <= 0:
+            return
+        gid = str(group_id or "").strip()
+        if not gid:
+            return
+        content = self._message_content_to_text(message, "")
+        if not content:
+            return
+        history = self._group_message_history.get(gid)
+        if history is None or history.maxlen != self.ban_forward_history_count:
+            history = deque(history or [], maxlen=self.ban_forward_history_count)
+            self._group_message_history[gid] = history
+        history.append({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user_id": self_id or self._self_id or "bot",
+            "name": self_nickname or self._self_nickname or "bot",
             "content": content,
         })
 
