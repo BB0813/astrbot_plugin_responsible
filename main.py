@@ -95,11 +95,7 @@ class RelationshipManager(Star):
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
-<<<<<<< HEAD
-            "关系管理插件初始化完成 v5.2.9-self-cache: data_dir=%s, pending_file=%s, pending_count=%s",
-=======
-            "关系管理插件初始化完成 v5.2.8-no-timestamp: data_dir=%s, pending_file=%s, pending_count=%s",
->>>>>>> 67f66bf (fix(#55): 移除合并转发聊天记录中的消息发送时间前缀)
+            "关系管理插件初始化完成 v5.2.10: data_dir=%s, pending_file=%s, pending_count=%s",
             self.data_dir,
             self.pd_file,
             len(self.pending),
