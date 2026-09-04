@@ -35,7 +35,7 @@ except ImportError:
     "astrbot_plugin_relationship_manager",
     "mjy1113451",
     "AstrBot 关系管理插件",
-    "5.2.10",
+    "5.2.11",
     "https://github.com/mjy1113451/bot_responsible",
 )
 class RelationshipManager(Star):
@@ -95,7 +95,7 @@ class RelationshipManager(Star):
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
-            "关系管理插件初始化完成 v5.2.10: data_dir=%s, pending_file=%s, pending_count=%s",
+            "关系管理插件初始化完成 v5.2.11: data_dir=%s, pending_file=%s, pending_count=%s",
             self.data_dir,
             self.pd_file,
             len(self.pending),
@@ -2220,7 +2220,8 @@ class RelationshipManager(Star):
                             await self._notify(msg)
 
                 elif notice_type == "group_ban":
-                    # issue #25: Bot 被禁言时通知 bot 主
+                    # issue #25: Bot 被禁言时通知 bot 主并转发禁言前记录
+                    # issue #57: Bot 被解除禁言时通知 bot 主
                     sub_type = raw.get("sub_type", "")
                     if sub_type == "ban" and user_id == self_id:
                         operator_name = await self._resolve_user_name(event, operator_id)
@@ -2230,6 +2231,28 @@ class RelationshipManager(Star):
                         )
                         await self._notify(msg)
                         await self._send_ban_history_forward(event, group_id)
+                    # issue #57: Bot 被解除禁言时通知 bot 主
+                    elif sub_type == "lift_ban" and user_id == self_id:
+                        if not group_id:
+                            return
+                        operator_name = await self._resolve_user_name(event, operator_id)
+                        group_name = group_id
+                        try:
+                            group_res = await self._api("get_group_info", event=event, group_id=int(group_id))
+                            if self._api_ok(group_res):
+                                group_data = self._api_data(group_res)
+                                if isinstance(group_data, dict):
+                                    group_name = group_data.get("group_name", group_id)
+                        except Exception:
+                            pass
+                        msg = (
+                            f"太好了！我在{group_name}{group_id}被{operator_name}"
+                            f"{operator_id}解除禁言了！"
+                        )
+                        await self._notify(msg)
+                        logger.info(
+                            f"Bot 在群 {group_id} 被 {operator_name}({operator_id}) 解除禁言，已通知管理员"
+                        )
 
                 elif notice_type == "group_increase":
                     sub_type = raw.get("sub_type", "")
