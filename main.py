@@ -9,6 +9,7 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event.filter import EventMessageType
+from astrbot.api.platform import MessageType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
@@ -35,7 +36,7 @@ except ImportError:
     "astrbot_plugin_relationship_manager",
     "mjy1113451",
     "AstrBot 关系管理插件",
-    "5.2.11",
+    "5.2.12",
     "https://github.com/mjy1113451/bot_responsible",
 )
 class RelationshipManager(Star):
@@ -95,7 +96,7 @@ class RelationshipManager(Star):
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
-            "关系管理插件初始化完成 v5.2.11: data_dir=%s, pending_file=%s, pending_count=%s",
+            "关系管理插件初始化完成 v5.2.12: data_dir=%s, pending_file=%s, pending_count=%s",
             self.data_dir,
             self.pd_file,
             len(self.pending),
@@ -1960,6 +1961,63 @@ class RelationshipManager(Star):
         return uid
 
     # ───────── 请求事件自动监听 ─────────
+
+    @filter.on_decorating_result()
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """issue #61: 缓存 bot 即将发出的群消息。
+
+        bot 的命令回复走 AstrBot 管道直接发送，不经过插件的 _api()，
+        所以 _api() 里的 send_group_msg 钩子只覆盖 _notify 等主动调用。
+        这里在框架发送前（result_decorate 阶段）拦截所有出站消息，
+        把 bot 自身发言补进群历史，禁言转发才能看到 bot 自己说了什么。
+        """
+        try:
+            if self.ban_forward_history_count <= 0:
+                return
+            result = event.get_result()
+            if result is None or not getattr(result, "chain", None):
+                return
+            # 只关心群聊出站消息
+            try:
+                message_type = event.get_message_type()
+            except Exception:
+                return
+            if message_type != MessageType.GROUP_MESSAGE:
+                return
+            try:
+                gid = str(event.get_group_id() or "").strip()
+            except Exception:
+                gid = ""
+            if not gid:
+                return
+            self_id = await self._resolve_self_id(event)
+            if not self_id:
+                return
+            self_nick = await self._resolve_self_nickname(event)
+            # 拼出消息链的文本形式
+            parts: List[str] = []
+            for comp in result.chain:
+                text = getattr(comp, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    ctype = getattr(comp, "type", None)
+                    if isinstance(ctype, str):
+                        comp_type = ctype
+                    elif ctype is not None and hasattr(ctype, "name"):
+                        comp_type = ctype.name
+                    else:
+                        comp_type = type(comp).__name__
+                    # ComponentType 枚举值形如 "Plain"/"At"，统一转 OneBot 小写风格
+                    parts.append(f"[CQ:{comp_type.lower()}]")
+            content = "".join(parts).strip()
+            if not content:
+                return
+            self._cache_self_group_message(
+                gid, content, self_id=self_id, self_nickname=self_nick
+            )
+        except Exception as e:
+            logger.debug(f"缓存出站群消息失败: {e}")
 
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_event(self, event: AstrMessageEvent) -> Optional[AstrMessageEvent]:
