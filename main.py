@@ -1980,13 +1980,15 @@ class RelationshipManager(Star):
             # 只关心群聊出站消息
             try:
                 message_type = event.get_message_type()
-            except Exception:
+            except Exception as e:
+                logger.warning(f"on_decorating_result 读取消息类型失败，跳过出站缓存: {e}")
                 return
             if message_type != MessageType.GROUP_MESSAGE:
                 return
             try:
                 gid = str(event.get_group_id() or "").strip()
-            except Exception:
+            except Exception as e:
+                logger.warning(f"on_decorating_result 读取群号失败，跳过出站缓存: {e}")
                 gid = ""
             if not gid:
                 return
@@ -2017,7 +2019,7 @@ class RelationshipManager(Star):
                 gid, content, self_id=self_id, self_nickname=self_nick
             )
         except Exception as e:
-            logger.debug(f"缓存出站群消息失败: {e}")
+            logger.warning(f"缓存出站群消息失败: {e}")
 
     @filter.event_message_type(EventMessageType.ALL)
     async def handle_event(self, event: AstrMessageEvent) -> Optional[AstrMessageEvent]:
