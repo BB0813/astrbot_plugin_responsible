@@ -1,6 +1,7 @@
 ﻿import json
 import re
 import asyncio
+import time
 import uuid
 from collections import deque
 from pathlib import Path
@@ -36,7 +37,7 @@ except ImportError:
     "astrbot_plugin_relationship_manager",
     "mjy1113451",
     "AstrBot 关系管理插件",
-    "5.2.12",
+    "5.2.13",
     "https://github.com/mjy1113451/bot_responsible",
 )
 class RelationshipManager(Star):
@@ -92,11 +93,15 @@ class RelationshipManager(Star):
         self._private_message_history: Dict[str, Deque[dict]] = {}
         self._self_id: Optional[str] = None
         self._self_nickname: Optional[str] = None
+        # issue #63: 出站/LLM 回复会被多个钩子重复捕获（_api 钩子、on_decorating_result、
+        # on_llm_response），用短 TTL 内容指纹去重，避免同一条 bot 发言在禁言转发记录里重复出现。
+        # 只缓存纯文本（去重键按文本计算），图片/表情等占位内容不参与去重。
+        self._outbound_cache_dedup: Deque[Tuple[str, float]] = deque(maxlen=128)
         self._lock = asyncio.Lock()
         self._patch_astrbot_message_session_id()
         self._cleanup_pending()
         logger.info(
-            "关系管理插件初始化完成 v5.2.12: data_dir=%s, pending_file=%s, pending_count=%s",
+            "关系管理插件初始化完成 v5.2.13: data_dir=%s, pending_file=%s, pending_count=%s",
             self.data_dir,
             self.pd_file,
             len(self.pending),
@@ -453,7 +458,7 @@ class RelationshipManager(Star):
                     await self._resolve_self_id(None)
                     await self._resolve_self_nickname(None)
                     self._cache_self_group_message(
-                        self.notify_group, msg,
+                        self.notify_group, msg, dedup_key=msg,
                     )
                     res = await client.send_group_msg(group_id=int(self.notify_group), message=msg)
                     if res and isinstance(res, dict):
@@ -783,6 +788,8 @@ class RelationshipManager(Star):
         """缓存 bot 自己发出的群消息，用于禁言时合并转发中包含 bot 自身发言 (#56)。
 
         不会向 _group_message_history 写入其它用户的发言，也不需要走 _extract_group_message_payload。
+        dedup_key: 可选的内容指纹。多个出站钩子会捕获同一条 bot 消息时由调用方传入，
+        相同指纹在 TTL 内只缓存一次 (#63)。
         """
         if self.ban_forward_history_count <= 0:
             return
@@ -796,6 +803,8 @@ class RelationshipManager(Star):
         content = self._message_content_to_text(message, "")
         if not content:
             return
+        if not self._mark_outbound_seen(gid, content, dedup_key):
+            return
         history = self._group_message_history.get(gid)
         if history is None or history.maxlen != self.ban_forward_history_count:
             history = deque(history or [], maxlen=self.ban_forward_history_count)
@@ -805,6 +814,36 @@ class RelationshipManager(Star):
             "name": str(self_nickname or self._self_nickname or "bot"),
             "content": content,
         })
+
+    _OUTBOUND_DEDUP_TTL = 10.0
+    """出站消息指纹去重窗口（秒）。覆盖同一条消息被多个钩子先后捕获的时间差。"""
+
+    # 出站消息中的非文本组件占位符（形如 [CQ:at]、[CQ:image]），
+    # 计算去重指纹时剥离，使装饰阶段带占位符的链文本能和 LLM 层捕获的原文对上。
+    _OUTBOUND_PLACEHOLDER_RE = re.compile(r"\[CQ:[a-z0-9_]+\]")
+
+    def _mark_outbound_seen(
+        self, group_id: str, content: str, dedup_key: Optional[str] = None
+    ) -> bool:
+        """记录出站消息指纹。返回 False 表示该消息在 TTL 内已缓存过，应跳过。
+
+        指纹按 "群号 + 内容/去重键" 计算，不同群的相同文本互不干扰。
+        dedup_key 为空时用全文；非空时用调用方提供的指纹（如 LLM 回复文本），
+        这样即使出站钩子拿到的是带占位符的链文本，也能和 LLM 层捕获的原文对上。
+        """
+        body = (str(dedup_key) if dedup_key else content).strip()
+        if not body:
+            return True
+        key = f"{group_id}\n{body}"
+        now = time.time()
+        # 清理过期指纹
+        while self._outbound_cache_dedup and now - self._outbound_cache_dedup[0][1] > self._OUTBOUND_DEDUP_TTL:
+            self._outbound_cache_dedup.popleft()
+        for existing, ts in self._outbound_cache_dedup:
+            if existing == key and now - ts <= self._OUTBOUND_DEDUP_TTL:
+                return False
+        self._outbound_cache_dedup.append((key, now))
+        return True
 
     def _cache_private_message(self, event: AstrMessageEvent):
         """缓存私聊消息,用于 /抽查 命令获取最近私聊记录。"""
@@ -1962,6 +2001,73 @@ class RelationshipManager(Star):
 
     # ───────── 请求事件自动监听 ─────────
 
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, response):
+        """issue #63: 在 LLM 回复完成时缓存 bot 发言，补齐 on_decorating_result 覆盖不到的路径。
+
+        AstrBot 4.27.3 中以下出站路径不会触发 on_decorating_result（result_decorate 阶段），
+        会导致禁言转发里看不到 bot 的 LLM 回复：
+
+        1. 流式输出（STREAMING_RESULT）由 respond 阶段 send_streaming 直连平台发送，
+           result_decorate 对流式结果直接 return，只有 STREAMING_FINISH 收尾轮能拿到链，
+           中途报错/中止时拿不到完整文本；
+        2. agent 工具直发结果（tool_direct_result）走 event.send() 绕过装饰阶段；
+        3. 分段回复的中间段、TTS/图片转换失败回退等路径同样可能跳过钩子。
+
+        on_llm_response 由 agent runner 的 on_agent_done 回调触发（流式/非流式都会走），
+        此时 response.result_chain / completion_text 携带完整最终回复，是最可靠的捕获点。
+        同一条消息随后若也被 on_decorating_result 捕获，由指纹去重保证只缓存一次。
+        """
+        try:
+            if self.ban_forward_history_count <= 0:
+                return
+            if response is None:
+                return
+            try:
+                message_type = event.get_message_type()
+            except Exception as e:
+                logger.warning(f"on_llm_response 读取消息类型失败，跳过 LLM 回复缓存: {e}")
+                return
+            if message_type != MessageType.GROUP_MESSAGE:
+                return
+            try:
+                gid = str(event.get_group_id() or "").strip()
+            except Exception as e:
+                logger.warning(f"on_llm_response 读取群号失败，跳过 LLM 回复缓存: {e}")
+                gid = ""
+            if not gid:
+                return
+            # 优先 result_chain（推荐字段），回退 completion_text 纯文本
+            text = ""
+            result_chain = getattr(response, "result_chain", None)
+            if result_chain is not None:
+                try:
+                    text = str(result_chain.get_plain_text() or "").strip()
+                except Exception:
+                    text = ""
+            if not text:
+                completion_text = getattr(response, "completion_text", None)
+                if isinstance(completion_text, str):
+                    text = completion_text.strip()
+            if not text:
+                return
+            self_id = await self._resolve_self_id(event)
+            if not self_id:
+                return
+            self_nick = await self._resolve_self_nickname(event)
+            # 与 on_decorating_result 的去重键保持同一算法（剥离占位符），
+            # 保证两条路径对同一条回复算出相同指纹
+            dedup_text = self._OUTBOUND_PLACEHOLDER_RE.sub("", text).strip()
+            self._cache_self_group_message(
+                gid,
+                text,
+                self_id=self_id,
+                self_nickname=self_nick,
+                dedup_key=dedup_text,
+            )
+        except Exception as e:
+            logger.warning(f"缓存 LLM 回复失败: {e}")
+
     @filter.on_decorating_result()
     async def on_decorating_result(self, event: AstrMessageEvent):
         """issue #61: 缓存 bot 即将发出的群消息。
@@ -2015,8 +2121,16 @@ class RelationshipManager(Star):
             content = "".join(parts).strip()
             if not content:
                 return
+            # 去重键剥离占位符：LLM 层（on_llm_response）先缓存的是纯原文，
+            # 装饰阶段插入的 At/Reply 等占位符若参与指纹，同一句话会缓存两遍 (#63)。
+            # Reply 段的 text 属性是空字符串，不会产生占位符；占位符统一来自非文本组件。
+            dedup_content = self._OUTBOUND_PLACEHOLDER_RE.sub("", content).strip()
             self._cache_self_group_message(
-                gid, content, self_id=self_id, self_nickname=self_nick
+                gid,
+                content,
+                self_id=self_id,
+                self_nickname=self_nick,
+                dedup_key=dedup_content,
             )
         except Exception as e:
             logger.warning(f"缓存出站群消息失败: {e}")
