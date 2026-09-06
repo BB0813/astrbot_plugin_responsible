@@ -784,6 +784,7 @@ class RelationshipManager(Star):
         message: Any,
         self_id: Optional[str] = None,
         self_nickname: Optional[str] = None,
+        dedup_key: Optional[str] = None,
     ):
         """缓存 bot 自己发出的群消息，用于禁言时合并转发中包含 bot 自身发言 (#56)。
 
