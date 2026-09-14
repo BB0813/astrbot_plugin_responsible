@@ -2383,7 +2383,13 @@ class RelationshipManager(Star):
                 if notice_type == "group_decrease":
                     sub_type = raw.get("sub_type", "")
                     if sub_type in ("kick", "kick_me") and user_id == self_id:
-                        if group_id:
+                        # #68：操作者为 Bot 自身 = 主动解散群/退群事件，
+                        # 不是"被踢"，不通知也不拉黑（解散时全员 decrease 且 operator=self）
+                        if operator_id and operator_id == self_id:
+                            logger.info(
+                                f"Bot 自行离开群 {group_id}（解散/主动退群），跳过被踢通知与拉黑"
+                            )
+                        elif group_id:
                             self._add_group_to_blacklist(group_id)
                             logger.info(f"Bot被踢出群 {group_id}，已将该群加入黑名单")
                             # 获取操作者昵称 (issue #25 模板: user_name / user_qq)
