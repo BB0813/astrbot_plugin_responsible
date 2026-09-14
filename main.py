@@ -2431,11 +2431,12 @@ class RelationshipManager(Star):
 
                 elif notice_type == "group_increase":
                     sub_type = raw.get("sub_type", "")
-                    # 仅处理"invite"（有人拉Bot进群），且排除自己操作自己的情况
+                    # 仅处理"别人拉 Bot 进群"；#69：放宽 sub_type 限制
+                    # （部分 OneBot 实现的拉群事件 sub_type 为 invite/approve 或空）
                     if (
                         user_id == self_id
                         and group_id
-                        and sub_type == "invite"
+                        and sub_type in ("invite", "approve", "")
                         and operator_id != self_id
                     ):
                         # 获取操作者昵称（与参考插件 get_nickname 逻辑一致）
