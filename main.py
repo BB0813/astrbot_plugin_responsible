@@ -2433,11 +2433,16 @@ class RelationshipManager(Star):
                     sub_type = raw.get("sub_type", "")
                     # 仅处理"别人拉 Bot 进群"；#69：放宽 sub_type 限制
                     # （部分 OneBot 实现的拉群事件 sub_type 为 invite/approve 或空）
+                    # review#72：空 sub_type 仅在 operator_id 存在（字段确有上报）时放行，
+                    # 避免把字段缺失/主动加群的 group_increase 误判为被人邀请
                     if (
                         user_id == self_id
                         and group_id
-                        and sub_type in ("invite", "approve", "")
                         and operator_id != self_id
+                        and (
+                            sub_type in ("invite", "approve")
+                            or (sub_type == "" and operator_id)
+                        )
                     ):
                         # 获取操作者昵称（与参考插件 get_nickname 逻辑一致）
                         operator_name = operator_id if operator_id else "未知"
