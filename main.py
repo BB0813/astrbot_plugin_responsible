@@ -748,6 +748,18 @@ class RelationshipManager(Star):
         # event 为 None（如 notify_group 路径）或 event 拿不到时，走 API 兜底
         if self._self_id:
             return self._self_id
+        # 兜底：从 raw 事件 payload 读 self_id（aiocqhttp RawMessage 自带 self_id 字段），
+        # 避免 get_self_id()/get_login_info 都拿不到时 bot 发言被静默跳过 (#63)
+        if event is not None:
+            try:
+                raw = self._find_dict_in_node(
+                    event, lambda p: isinstance(p, dict) and bool(p.get("self_id"))
+                )
+                if isinstance(raw, dict) and raw.get("self_id"):
+                    self._self_id = str(raw["self_id"])
+                    return self._self_id
+            except Exception as e:
+                logger.debug(f"从 raw payload 解析 self_id 失败: {e}")
         try:
             info = await self._api("get_login_info", event=event)
             if self._api_ok(info):
@@ -800,6 +812,12 @@ class RelationshipManager(Star):
         # 拿不到 bot 自身 QQ 号时跳过缓存，避免用 "bot" 等字面量污染 user_id 空间
         uid = str(self_id or "").strip() or (self._self_id or "")
         if not uid:
+            # issue #63：此前为静默 return，导致"无报错但 bot 发言缺失"难以定位；改为告警
+            logger.warning(
+                "缓存 bot 自身群消息跳过：无法解析 bot 自身 QQ 号 (self_id)，"
+                "群 %s 的 bot 发言不会进入禁言转发",
+                group_id,
+            )
             return
         content = self._message_content_to_text(message, "")
         if not content:
@@ -2383,9 +2401,15 @@ class RelationshipManager(Star):
                 if notice_type == "group_decrease":
                     sub_type = raw.get("sub_type", "")
                     if sub_type in ("kick", "kick_me") and user_id == self_id:
+                        # #68：操作者为 Bot 自身 = 主动解散群/退群事件，
+                        # 不是"被踢"，不通知也不拉黑（解散时全员 decrease 且 operator=self）
+                        if operator_id and operator_id == self_id:
+                            logger.info(
+                                f"Bot 自行离开群 {group_id}（解散/主动退群），跳过被踢通知与拉黑"
+                            )
                         # #69（owner 澄清）：操作者为 bot 主（管理员名单）时属主动操作，
                         # 不通知也不拉黑
-                        if operator_id and operator_id in self._get_admins():
+                        elif operator_id and operator_id in self._get_admins():
                             logger.info(
                                 f"Bot 被 bot 主 {operator_id} 踢出群 {group_id}（主动操作），跳过通知与拉黑"
                             )
