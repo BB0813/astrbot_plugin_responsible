@@ -2383,7 +2383,13 @@ class RelationshipManager(Star):
                 if notice_type == "group_decrease":
                     sub_type = raw.get("sub_type", "")
                     if sub_type in ("kick", "kick_me") and user_id == self_id:
-                        if group_id:
+                        # #69（owner 澄清）：操作者为 bot 主（管理员名单）时属主动操作，
+                        # 不通知也不拉黑
+                        if operator_id and operator_id in self._get_admins():
+                            logger.info(
+                                f"Bot 被 bot 主 {operator_id} 踢出群 {group_id}（主动操作），跳过通知与拉黑"
+                            )
+                        elif group_id:
                             self._add_group_to_blacklist(group_id)
                             logger.info(f"Bot被踢出群 {group_id}，已将该群加入黑名单")
                             # 获取操作者昵称 (issue #25 模板: user_name / user_qq)
@@ -2399,13 +2405,19 @@ class RelationshipManager(Star):
                     # issue #57: Bot 被解除禁言时通知 bot 主
                     sub_type = raw.get("sub_type", "")
                     if sub_type == "ban" and user_id == self_id:
-                        operator_name = await self._resolve_user_name(event, operator_id)
-                        msg = (
-                            f"呜呜呜X﹏X！我在{group_id}被{operator_name}"
-                            f"{operator_id}禁言了！"
-                        )
-                        await self._notify(msg)
-                        await self._send_ban_history_forward(event, group_id)
+                        # #69（owner 澄清）：bot 主禁言属主动操作，不通知也不转发禁言前记录
+                        if operator_id and operator_id in self._get_admins():
+                            logger.info(
+                                f"Bot 被 bot 主 {operator_id} 在群 {group_id} 禁言（主动操作），跳过通知与转发"
+                            )
+                        else:
+                            operator_name = await self._resolve_user_name(event, operator_id)
+                            msg = (
+                                f"呜呜呜X﹏X！我在{group_id}被{operator_name}"
+                                f"{operator_id}禁言了！"
+                            )
+                            await self._notify(msg)
+                            await self._send_ban_history_forward(event, group_id)
                     # issue #57: Bot 被解除禁言时通知 bot 主
                     elif sub_type == "lift_ban" and user_id == self_id:
                         if not group_id:
@@ -2472,7 +2484,12 @@ class RelationshipManager(Star):
 
                         # 管理员拉群直接放行，其余人按规则过滤
                         admins = self._get_admins()
-                        if operator_id not in admins:
+                        # #69（owner 澄清）：bot 主拉群属主动操作，不通知
+                        if operator_id in admins:
+                            logger.info(
+                                f"Bot 被 bot 主 {operator_id} 拉入群 {group_name}({group_id})（主动操作），跳过通知"
+                            )
+                        else:
                             if self._is_group_blocked(group_id):
                                 msg += f"\n群聊 {group_name}({group_id}) 在黑名单里，已退群"
                                 try:
@@ -2488,8 +2505,8 @@ class RelationshipManager(Star):
                                     logger.error(f"黑名单群 {group_id} 退群异常: {notify_err}")
                                 logger.info(f"已自动退出黑名单群 {group_id}")
 
-                        await self._notify(msg)
-                        logger.info(f"Bot被 {operator_name}({operator_id}) 拉入群 {group_name}({group_id})，已通知管理员")
+                            await self._notify(msg)
+                            logger.info(f"Bot被 {operator_name}({operator_id}) 拉入群 {group_name}({group_id})，已通知管理员")
 
         except Exception as e:
             logger.error(f"处理通知事件异常: {e}")
